@@ -1,0 +1,144 @@
+name: Xeon E5-2440 F16C experimental v3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Python for patch installation
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply targeted F16C patch (no full-file merge)
+        shell: pwsh
+        run: |
+          $patchBase64 = @'
+          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
+          '@
+          [IO.File]::WriteAllBytes('xeon-f16c-v3.zip', [Convert]::FromBase64String(($patchBase64 -replace '\s', '')))
+          Expand-Archive -Path xeon-f16c-v3.zip -DestinationPath xeon-f16c-v3
+          python xeon-f16c-v3/patch_v3.py .
+
+      - name: Install MSYS2 CLANG64 and official dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            git patch
+            mingw-w64-clang-x86_64-toolchain mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-python
+            mingw-w64-clang-x86_64-vulkan-headers mingw-w64-clang-x86_64-vulkan-loader
+            mingw-w64-clang-x86_64-vulkan-memory-allocator mingw-w64-clang-x86_64-glslang
+            mingw-w64-clang-x86_64-sdl3 mingw-w64-clang-x86_64-fmt mingw-w64-clang-x86_64-boost
+            mingw-w64-clang-x86_64-robin-map mingw-w64-clang-x86_64-xxhash mingw-w64-clang-x86_64-ffmpeg
+            mingw-w64-clang-x86_64-zydis mingw-w64-clang-x86_64-spirv-tools
+            mingw-w64-clang-x86_64-spirv-headers mingw-w64-clang-x86_64-spirv-cross
+            mingw-w64-clang-x86_64-freetype
+
+      - name: Build Windows loader (without launcher)
+        shell: msys2 {0}
+        working-directory: port
+        env:
+          MSYS2_ROOT: ${{ runner.temp }}/msys64
+        run: |
+          export MSYS2_ROOT=$(cygpath -u "$MSYS2_ROOT")
+          TLG_LTO=OFF bash build.sh
+
+      - name: Upload Xeon F16C loader
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlg-probe-xeon-e5-2440-f16c-v3
+          path: port/out/tlg-probe.exe
+          if-no-files-found: error
+
+      - name: Preserve build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xeon-f16c-v3-build-logs
+          path: |
+            port/out/gpu-build.log
+            port/out/gpu/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
