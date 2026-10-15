@@ -1,4 +1,4 @@
-name: RX580 experimental BC1 RGBA2D (Windows)
+     name: RX580 experimental BC1 RGBA2D (Windows)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: HayatoG/iss_pc
-          ref: 5d2323e5716a
+          ref: 5d2323e5716a46a86fd16ffc49dba39bc47029ba
           submodules: recursive
           persist-credentials: false
 
@@ -59,7 +59,7 @@ jobs:
           """
           from pathlib import Path
           
-          source_path = Path("video_core/texture_cache/image_info.cpp")
+          source_path = Path("gpu/shadps4/video_core/texture_cache/image_info.cpp")
           if not source_path.is_file():
               raise SystemExit(f"ERROR: run this script from iss_pc/port (missing {source_path})")
           source = source_path.read_text(encoding="utf-8")
@@ -93,7 +93,7 @@ jobs:
           print("Runtime experiment: TLG_RX580_RGBA2D=1 (default OFF)")
           
           # Add bounded diagnostics to the first CPU stages of image transition.
-          runtime_path = Path("video_core/renderer_vulkan/vk_runtime.cpp")
+          runtime_path = Path("gpu/shadps4/video_core/renderer_vulkan/vk_runtime.cpp")
           if not runtime_path.is_file():
               raise SystemExit(f"ERROR: missing {runtime_path}")
           runtime = runtime_path.read_text(encoding="utf-8")
@@ -125,7 +125,7 @@ jobs:
           print(f"PATCH OK: {runtime_path}")
           PY
           python rx580_apply.py
-          grep -n 'RX580 EXPERIMENT ACTIVE' video_core/texture_cache/image_info.cpp
+          grep -n 'RX580 EXPERIMENT ACTIVE' gpu/shadps4/video_core/texture_cache/image_info.cpp
 
       - name: Build Windows
         env:
