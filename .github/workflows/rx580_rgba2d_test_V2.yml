@@ -1,0 +1,153 @@
+name: RX580 experimental BC1 RGBA2D (Windows)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+        working-directory: port
+    steps:
+      - name: Checkout official source (same build as tested)
+        uses: actions/checkout@v4
+        with:
+          repository: HayatoG/iss_pc
+          ref: 5d2323e5716a46a86fd16ffc49dba39bc47029ba
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.12'
+
+      - name: Set up MSYS2 (CLANG64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            git patch
+            mingw-w64-clang-x86_64-toolchain mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-python
+            mingw-w64-clang-x86_64-vulkan-headers mingw-w64-clang-x86_64-vulkan-loader
+            mingw-w64-clang-x86_64-vulkan-memory-allocator mingw-w64-clang-x86_64-glslang
+            mingw-w64-clang-x86_64-sdl3 mingw-w64-clang-x86_64-fmt mingw-w64-clang-x86_64-boost
+            mingw-w64-clang-x86_64-robin-map mingw-w64-clang-x86_64-xxhash mingw-w64-clang-x86_64-ffmpeg
+            mingw-w64-clang-x86_64-zydis mingw-w64-clang-x86_64-spirv-tools
+            mingw-w64-clang-x86_64-spirv-headers mingw-w64-clang-x86_64-spirv-cross
+            mingw-w64-clang-x86_64-freetype
+
+      - name: Apply experimental 512x1 RGBA2D patch (strict source checks)
+        run: |
+          cat > rx580_apply.py <<'PY'
+          #!/usr/bin/env python3
+          """Experiment for HayatoG/iss_pc commit 5d2323e5716a.
+          
+          Re-uses the existing TLG_BC_TINY CPU BC1 decoder and the preexisting
+          is_host_2d code path, but enables both only for the observed 512x1x32,
+          10-mip BC1-sRGB problematic image. No changes to game assets.
+          
+          Off by default; enable at runtime with TLG_RX580_RGBA2D=1.
+          """
+          from pathlib import Path
+          
+          source_path = Path("gpu/shadps4/video_core/texture_cache/image_info.cpp")
+          if not source_path.is_file():
+              raise SystemExit(f"ERROR: run this script from iss_pc/port (missing {source_path})")
+          source = source_path.read_text(encoding="utf-8")
+          include_anchor = '#include <mutex>\n'
+          if source.count(include_anchor) != 1:
+              raise SystemExit("ERROR: unexpected upstream source: missing or ambiguous <mutex> include")
+          source = source.replace(include_anchor, include_anchor + '#include <cstdlib>\n#include <cstdio>\n', 1)
+          anchor = '''        props.is_bc_decoded = true;
+                  bc_format = pixel_format;
+                  pixel_format = decoded;
+          '''
+          if source.count(anchor) != 1:
+              raise SystemExit("ERROR: unexpected upstream source: cannot locate BC tiny decoder")
+          extra = '''        // RX 580 diagnostic workaround. This deliberately reuses the existing host-2D image
+                  // and image-view paths, after the normal CPU BC1 decode has been selected.
+                  // Restrict the experiment to the exact resource reported in issue #67.
+                  // Only active with TLG_RX580_RGBA2D=1; original behavior is the default.
+                  const char* rx580_rgba2d = std::getenv("TLG_RX580_RGBA2D");
+                  if (rx580_rgba2d && rx580_rgba2d[0] == '1' && is_1d &&
+                      size.width == 512 && size.height == 1 &&
+                      resources.layers == 32 && resources.levels == 10 &&
+                      bc_format == vk::Format::eBc1RgbaSrgbBlock) {
+                      props.is_host_2d = true;
+                      std::printf("RX580 EXPERIMENT ACTIVE: decoded BC1 512x1 L32 M10 -> RGBA8 host 2D\\n");
+                      std::fflush(stdout);
+                  }
+          '''
+          source = source.replace(anchor, anchor + extra, 1)
+          source_path.write_text(source, encoding="utf-8")
+          print(f"PATCH OK: {source_path}")
+          print("Runtime experiment: TLG_RX580_RGBA2D=1 (default OFF)")
+          
+          # Add bounded diagnostics to the first CPU stages of image transition.
+          runtime_path = Path("gpu/shadps4/video_core/renderer_vulkan/vk_runtime.cpp")
+          if not runtime_path.is_file():
+              raise SystemExit(f"ERROR: missing {runtime_path}")
+          runtime = runtime_path.read_text(encoding="utf-8")
+          old = '''    BeforeImageAccess();
+              if (scene_targets) scene_targets->NativeAccess(*image, dst_access);
+              const size_t prev_num_barriers = static_cast<size_t>(image_barriers.size());
+              image->GetBarriers(image_barriers, dst_layout, dst_access, dst_stage, subres_range);
+              return image_barriers.size() != prev_num_barriers;
+          '''
+          new = '''    BeforeImageAccess();
+              if (TraceIs1D(image)) {
+                  TLG_IMG_TRACE("Transit: after BeforeImageAccess %p\\n", (void*)VkImage(image->GetImage()));
+              }
+              if (scene_targets) scene_targets->NativeAccess(*image, dst_access);
+              if (TraceIs1D(image)) {
+                  TLG_IMG_TRACE("Transit: after NativeAccess %p\\n", (void*)VkImage(image->GetImage()));
+              }
+              const size_t prev_num_barriers = static_cast<size_t>(image_barriers.size());
+              image->GetBarriers(image_barriers, dst_layout, dst_access, dst_stage, subres_range);
+              if (TraceIs1D(image)) {
+                  TLG_IMG_TRACE("Transit: after GetBarriers %p\\n", (void*)VkImage(image->GetImage()));
+              }
+              return image_barriers.size() != prev_num_barriers;
+          '''
+          if runtime.count(old) != 1:
+              raise SystemExit("ERROR: unexpected upstream source: cannot locate Transit implementation")
+          runtime = runtime.replace(old, new, 1)
+          runtime_path.write_text(runtime, encoding="utf-8")
+          print(f"PATCH OK: {runtime_path}")
+          PY
+          python rx580_apply.py
+          grep -n 'RX580 EXPERIMENT ACTIVE' gpu/shadps4/video_core/texture_cache/image_info.cpp
+
+      - name: Build Windows
+        env:
+          MSYS2_ROOT: ${{ runner.temp }}/msys64
+        run: |
+          export MSYS2_ROOT=$(cygpath -u "$MSYS2_ROOT")
+          TLG_LTO=OFF bash build.sh
+
+      - name: Package Windows
+        env:
+          MSYS2_ROOT: ${{ runner.temp }}/msys64
+          WINPYTHON_WIN: ${{ steps.python.outputs.python-path }}
+        run: |
+          export MSYS2_ROOT=$(cygpath -u "$MSYS2_ROOT")
+          export WINPYTHON=$(cygpath -u "$WINPYTHON_WIN")
+          bash packaging/windows/package.sh
+          test -f dist/infamous-windows-x86_64.zip
+
+      - name: Upload experimental Windows package (not a release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: infamous-rx580-rgba2d-experimental
+          path: port/dist/infamous-windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 7
